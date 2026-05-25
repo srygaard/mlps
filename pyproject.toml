@@ -1,0 +1,9 @@
+[project]
+name = "mlps"
+version = "0.1.0"
+description = "ML performance studies"
+authors = [{ name = "Steven Rygaard", email = "steven.rygaard@mila.quebec" }]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = []

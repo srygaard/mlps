@@ -1,0 +1,8 @@
+[project]
+name = "mlps-shared"
+version = "0.1.0"
+description = "Shared utilities for mlps studies"
+authors = [{ name = "Steven Rygaard", email = "steven.rygaard@mila.quebec" }]
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = []

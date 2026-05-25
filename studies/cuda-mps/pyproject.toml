@@ -1,0 +1,14 @@
+[project]
+name = "cuda-mps"
+version = "0.1.0"
+description = "Performance study: CUDA MPS multi-process GPU sharing"
+authors = [{ name = "Steven Rygaard", email = "steven.rygaard@mila.quebec" }]
+requires-python = ">=3.14"
+dependencies = [
+    "mlps-shared",
+    "torch",
+    "tyro",
+]
+
+[tool.uv.sources]
+mlps-shared = { path = "../../shared", editable = true }
