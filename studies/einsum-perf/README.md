@@ -37,12 +37,30 @@ for PyTorch GPU** and **~0.052 ms for JAX GPU**.
 
 JAX's GPU dispatch baseline is 3–4× higher than PyTorch's. Any GPU savings smaller than this floor are invisible in the results. On CPU the floor is sub-microsecond for native dispatch (~0.002 ms) but rises to ~0.011 ms for `opt_einsum` even for trivial operations.
 
-
 ## Results
+
+### System
+
+```text
+System Configuraton
+
+  python     : 3.14.3
+  platform   : Linux-5.15.0-173-generic-x86_64-with-glibc2.35
+  cpu        : Intel(R) Xeon(R) Gold 5418Y
+  cpu_cores  : 8 (of 48)
+  ram_gb     : 6 (of 1002.2)
+  numpy      : 2.4.6
+  torch      : 2.12.0
+  jax        : 0.10.1
+  gpu        : NVIDIA L40S
+  gpu_mem_gb : 45.0
+  gpu_driver : 580.95.05
+  git        : 20169d4
+```
 
 ### PyTorch — CPU
 
-```
+```text
 torch/cpu
 Operation           | Shape                           |     native      |     einsum      |   opt_einsum
 -----------------------------------------------------------------------------------------------------------
@@ -75,7 +93,7 @@ mode-n product      | [64×64×64]×₁[64×32]             | 0.0528[0.0216]  | 
 
 ### PyTorch — CUDA
 
-```
+```text
 torch/cuda
 Operation           | Shape                           |     native      |     einsum      |   opt_einsum
 -----------------------------------------------------------------------------------------------------------
@@ -108,7 +126,7 @@ mode-n product      | [64×64×64]×₁[64×32]             | 0.0329[0.0010]  | 
 
 ### JAX — CPU
 
-```
+```text
 jax/cpu
 Operation           | Shape                           |     native      |     einsum      |   opt_einsum
 -----------------------------------------------------------------------------------------------------------
@@ -141,7 +159,7 @@ mode-n product      | [64×64×64]×₁[64×32]             | 0.2673[0.0222]  | 
 
 ### JAX — CUDA
 
-```
+```text
 jax/cuda
 Operation           | Shape                           |     native      |     einsum      |   opt_einsum
 -----------------------------------------------------------------------------------------------------------

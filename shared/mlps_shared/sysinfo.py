@@ -121,31 +121,14 @@ def _cpu_cores_str() -> str:
 
 
 def _gpu_info() -> dict[str, str]:
-    """Detect GPU(s) via torch.cuda, falling back to nvidia-smi."""
+    """Detect GPU(s) via nvidia-smi."""
     result: dict[str, str] = {}
 
-    try:
-        import torch  # noqa: PLC0415
-
-        if torch.cuda.is_available():
-            count = torch.cuda.device_count()
-            for i in range(count):
-                props = torch.cuda.get_device_properties(i)
-                key = f"gpu_{i}" if count > 1 else "gpu"
-                result[key] = props.name
-                result[f"{key}_mem_gb"] = f"{props.total_memory / 1024 ** 3:.1f}"
-            if torch.version.cuda:
-                result["cuda"] = torch.version.cuda
-        return result
-    except ImportError:
-        pass
-
-    # Fallback: nvidia-smi (when torch is not installed)
     try:
         out = subprocess.check_output(
             [
                 "nvidia-smi",
-                "--query-gpu=name,memory.total",
+                "--query-gpu=name,memory.total,driver_version",
                 "--format=csv,noheader,nounits",
             ],
             stderr=subprocess.DEVNULL,
@@ -153,10 +136,17 @@ def _gpu_info() -> dict[str, str]:
         ).strip()
         lines = out.splitlines()
         for i, line in enumerate(lines):
-            name, mem_mib = line.split(", ", 1)
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 2:
+                continue
+            name = parts[0]
+            mem_mib = parts[1]
+            driver = parts[2] if len(parts) >= 3 else None
             key = f"gpu_{i}" if len(lines) > 1 else "gpu"
-            result[key] = name.strip()
-            result[f"{key}_mem_gb"] = f"{int(mem_mib.strip()) / 1024:.1f}"
+            result[key] = name
+            result[f"{key}_mem_gb"] = f"{int(mem_mib) / 1024:.1f}"
+            if driver:
+                result[f"{key}_driver"] = driver
     except Exception:
         pass
 
