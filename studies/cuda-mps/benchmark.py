@@ -15,9 +15,14 @@ from workloads.result import WorkloadResult
 class CudaMpsDaemon:
     _instance: "CudaMpsDaemon | None" = None
 
-    def __new__(cls, *args, **kwargs) -> "CudaMpsDaemon":
+    def __new__(
+        cls,
+        start_timeout: float = 5.0,
+        stop_timeout: float = 5.0,
+        pipe_dir: Path | None = None,
+    ) -> "CudaMpsDaemon":
         if cls._instance is None:
-            cls._instance = super().__new__(cls, *args, **kwargs)
+            cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
@@ -54,7 +59,9 @@ class CudaMpsDaemon:
             if (self.pipe_dir / "control").exists():
                 return
             time.sleep(0.5)
-        raise RuntimeError(f"MPS daemon did not become ready within {self.start_timeout}s")
+        raise RuntimeError(
+            f"MPS daemon did not become ready within {self.start_timeout}s"
+        )
 
     def stop(self) -> None:
         subprocess.run(
@@ -66,7 +73,7 @@ class CudaMpsDaemon:
         deadline = time.monotonic() + self.stop_timeout
         while time.monotonic() < deadline:
             pgrep = subprocess.run(["pgrep", "-x", "nvidia-cuda-mps-server"])
-            if (pgrep.returncode != 0):
+            if pgrep.returncode != 0:
                 return
             time.sleep(0.5)
         raise RuntimeError(f"MPS daemon did not stop within {self.stop_timeout}s")
@@ -79,7 +86,9 @@ class CudaMpsDaemon:
         self.stop()
 
 
-def print_metrics(label: str, results: list[WorkloadResult], baseline: float | None = None) -> float:
+def print_metrics(
+    label: str, results: list[WorkloadResult], baseline: float | None = None
+) -> float:
     values = [res.metrics[0].value for res in results]
     units = [res.metrics[0].unit for res in results]
     unit = units[0] if units else "units"
@@ -105,10 +114,7 @@ def run_concurrent(
     results_dir: Path,
 ) -> list[WorkloadResult]:
     """Launch n_procs concurrent workload processes and read JSON result files."""
-    results = [
-        results_dir / f"{workload.stem}_{i}.json"
-        for i in range(1, n_procs + 1)
-    ]
+    results = [results_dir / f"{workload.stem}_{i}.json" for i in range(1, n_procs + 1)]
 
     procs = [
         subprocess.Popen(
@@ -127,14 +133,13 @@ def run_concurrent(
     ]
 
     for p in procs:
-        stdout, stderr = p.communicate()
+        _, stderr = p.communicate()
         if p.returncode != 0:
-            raise RuntimeError(f"Workload {workload.name} failed with exit code {p.returncode}: {stderr.strip()}")
+            raise RuntimeError(
+                f"Workload {workload.name} failed with exit code {p.returncode}: {stderr.strip()}"
+            )
 
-    return [
-        WorkloadResult.model_validate_json(f.read_text())
-        for f in results
-    ]
+    return [WorkloadResult.model_validate_json(f.read_text()) for f in results]
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,7 +163,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
 
     workload_flags = ["--duration", str(args.duration)]
@@ -183,13 +188,15 @@ def main() -> None:
         # ======= 1 process, baseline =======
         baseline = print_metrics(
             "1 Process - Baseline",
-            run_concurrent(workload, workload_flags, 1, results_dir / 'baseline'),
+            run_concurrent(workload, workload_flags, 1, results_dir / "baseline"),
         )
 
         # ======= N process, default =======
         print_metrics(
             f"{args.n_procs} Processes - MPS Disabled",
-            run_concurrent(workload, workload_flags, args.n_procs, results_dir / 'disabled'),
+            run_concurrent(
+                workload, workload_flags, args.n_procs, results_dir / "disabled"
+            ),
             baseline=baseline,
         )
 
@@ -197,7 +204,9 @@ def main() -> None:
         with mps:
             print_metrics(
                 f"{args.n_procs} Processes - MPS Enabled",
-                run_concurrent(workload, workload_flags, args.n_procs, results_dir / 'enabled'),
+                run_concurrent(
+                    workload, workload_flags, args.n_procs, results_dir / "enabled"
+                ),
                 baseline=baseline,
             )
         print()
