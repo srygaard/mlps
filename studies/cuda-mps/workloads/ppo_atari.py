@@ -10,11 +10,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from mlps_shared import affinity
-from result import WorkloadResult
+from result import Metric, WorkloadResult
 from torch.distributions.categorical import Categorical
 
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+def layer_init(layer: nn.Conv2d, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
@@ -45,7 +45,7 @@ class Agent(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
 
-# @torch.compile
+
 def ppo_update(
     agent: Agent,
     optimizer: optim.Optimizer,
@@ -91,6 +91,9 @@ def parse_args():
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--result-file", type=str, default=None)
+    parser.add_argument(
+        "--compile", action="store_true", help="Use torch.compile for PPO update"
+    )
     return parser.parse_args()
 
 
@@ -124,9 +127,13 @@ def main(args: argparse.Namespace) -> None:
     b_advantages = torch.randn(batch_size, generator=rng, device=device)
     b_returns = torch.randn(batch_size, generator=rng, device=device)
     b_values = torch.randn(batch_size, generator=rng, device=device)
+    if args.compile:
+        _ppo_update = torch.compile(ppo_update)  # type: ignore
+    else:
+        _ppo_update = ppo_update
 
     for _ in range(args.warmup):
-        ppo_update(
+        _ppo_update(
             agent,
             optimizer,
             b_obs,
@@ -141,7 +148,7 @@ def main(args: argparse.Namespace) -> None:
     deadline = start + args.duration
     steps = 0
     while time.perf_counter() < deadline:
-        ppo_update(
+        _ppo_update(
             agent,
             optimizer,
             b_obs,
@@ -163,13 +170,7 @@ def main(args: argparse.Namespace) -> None:
         res = WorkloadResult(
             workload=Path(__file__).stem,
             duration=args.duration,
-            metrics=[
-                {
-                    "name": "Steps per second",
-                    "value": sps,
-                    "unit": "steps/s",
-                }
-            ],
+            metrics=[Metric(name="Steps per second", value=sps, unit="steps/s")],
         )
         result_path.write_text(res.model_dump_json())
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 from mlps_shared import affinity
-from result import WorkloadResult
+from result import Metric, WorkloadResult
 
 
 def main(args: argparse.Namespace) -> None:
@@ -15,7 +15,7 @@ def main(args: argparse.Namespace) -> None:
     n, b = args.matrix_size, args.batch_size
     a = torch.randn(b, n, n, dtype=dtype, device=device)
     x = torch.randn(b, n, n, dtype=dtype, device=device)
-    flops_per_iter = 2 * (n**3) * b
+    flops_per_iter: float = 2 * (n**3) * b
 
     gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
     print(f"device={gpu_name}  dtype={args.dtype}  matrix={n}x{n}  batch={b}")
@@ -24,7 +24,7 @@ def main(args: argparse.Namespace) -> None:
         torch.bmm(a, x)
     torch.cuda.synchronize()
 
-    tflops_history = []
+    tflops_history: list[float] = []
     deadline = time.perf_counter() + args.duration
     next_print = time.perf_counter()
 
@@ -58,25 +58,39 @@ def main(args: argparse.Namespace) -> None:
             workload=workload_name,
             duration=args.duration,
             metrics=[
-                {
-                    "name": "mean_tflops",
-                    "value": float(mean_tflops),
-                    "unit": "TFLOPS",
-                }
+                Metric(name="mean_tflops", value=float(mean_tflops), unit="TFLOPS")
             ],
         )
-        result_path.write_text(res.json())
+        result_path.write_text(res.model_dump_json())
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="BMM CUDA workload")
-    parser.add_argument("--matrix-size", type=int, default=512, help="square matrix side length")
-    parser.add_argument("--batch-size", type=int, default=8, help="matrix pairs per iteration")
-    parser.add_argument("--num-warmup", type=int, default=10, help="warmup iterations before timing")
-    parser.add_argument("--num-iters", type=int, default=10_000_000, help="maximum timed iterations")
-    parser.add_argument("--duration", type=float, default=10.0, help="run duration seconds")
-    parser.add_argument("--dtype", type=str, default="float16", choices=["float16", "bfloat16", "float32"], help="compute dtype")
-    parser.add_argument("--result-file", type=str, default=None, help="optional JSON result file path")
+    parser.add_argument(
+        "--matrix-size", type=int, default=256, help="square matrix side length"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=8, help="matrix pairs per iteration"
+    )
+    parser.add_argument(
+        "--num-warmup", type=int, default=10, help="warmup iterations before timing"
+    )
+    parser.add_argument(
+        "--num-iters", type=int, default=10_000_000, help="maximum timed iterations"
+    )
+    parser.add_argument(
+        "--duration", type=float, default=10.0, help="run duration seconds"
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float16",
+        choices=["float16", "bfloat16", "float32"],
+        help="compute dtype",
+    )
+    parser.add_argument(
+        "--result-file", type=str, default=None, help="optional JSON result file path"
+    )
     return parser.parse_args()
 
 

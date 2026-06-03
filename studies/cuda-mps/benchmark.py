@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import time
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from mlps_shared import results as rpt
@@ -12,12 +14,26 @@ from mlps_shared import sysinfo
 from workloads.result import WorkloadResult
 
 
+@dataclass(frozen=True)
+class Workload:
+    """Represents a workload with its path and additional arguments."""
+
+    description: str
+    path: Path
+    args: list[str]
+
+
 class CudaMpsDaemon:
     _instance: "CudaMpsDaemon | None" = None
 
-    def __new__(cls, *args, **kwargs) -> "CudaMpsDaemon":
+    def __new__(
+        cls,
+        start_timeout: float = 5.0,
+        stop_timeout: float = 5.0,
+        pipe_dir: Path | None = None,
+    ) -> "CudaMpsDaemon":
         if cls._instance is None:
-            cls._instance = super().__new__(cls, *args, **kwargs)
+            cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
@@ -54,7 +70,9 @@ class CudaMpsDaemon:
             if (self.pipe_dir / "control").exists():
                 return
             time.sleep(0.5)
-        raise RuntimeError(f"MPS daemon did not become ready within {self.start_timeout}s")
+        raise RuntimeError(
+            f"MPS daemon did not become ready within {self.start_timeout}s"
+        )
 
     def stop(self) -> None:
         subprocess.run(
@@ -66,7 +84,7 @@ class CudaMpsDaemon:
         deadline = time.monotonic() + self.stop_timeout
         while time.monotonic() < deadline:
             pgrep = subprocess.run(["pgrep", "-x", "nvidia-cuda-mps-server"])
-            if (pgrep.returncode != 0):
+            if pgrep.returncode != 0:
                 return
             time.sleep(0.5)
         raise RuntimeError(f"MPS daemon did not stop within {self.stop_timeout}s")
@@ -79,7 +97,9 @@ class CudaMpsDaemon:
         self.stop()
 
 
-def print_metrics(label: str, results: list[WorkloadResult], baseline: float | None = None) -> float:
+def print_metrics(
+    label: str, results: list[WorkloadResult], baseline: float | None = None
+) -> float:
     values = [res.metrics[0].value for res in results]
     units = [res.metrics[0].unit for res in results]
     unit = units[0] if units else "units"
@@ -99,23 +119,23 @@ def print_metrics(label: str, results: list[WorkloadResult], baseline: float | N
 
 
 def run_concurrent(
-    workload: Path,
-    workload_flags: list[str],
+    workload: Workload,
     n_procs: int,
     results_dir: Path,
 ) -> list[WorkloadResult]:
     """Launch n_procs concurrent workload processes and read JSON result files."""
     results = [
-        results_dir / f"{workload.stem}_{i}.json"
-        for i in range(1, n_procs + 1)
+        # Since the workload may be the same file with different args, use unique paths
+        results_dir / f"{workload.path.stem}_{uuid.uuid4()}.json"
+        for _ in range(n_procs)
     ]
 
     procs = [
         subprocess.Popen(
             [
                 sys.executable,
-                str(workload.resolve()),
-                *workload_flags,
+                str(workload.path.resolve()),
+                *workload.args,
                 "--result-file",
                 str(result),
             ],
@@ -127,19 +147,18 @@ def run_concurrent(
     ]
 
     for p in procs:
-        stdout, stderr = p.communicate()
+        _, stderr = p.communicate()
         if p.returncode != 0:
-            raise RuntimeError(f"Workload {workload.name} failed with exit code {p.returncode}: {stderr.strip()}")
+            raise RuntimeError(
+                f"Workload {workload.path.name} failed with exit code {p.returncode}: {stderr.strip()}"
+            )
 
-    return [
-        WorkloadResult.model_validate_json(f.read_text())
-        for f in results
-    ]
+    return [WorkloadResult.model_validate_json(f.read_text()) for f in results]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CUDA MPS multi-process GPU benchmark")
-    n_procs = 2
+    n_procs = 3
     parser.add_argument(
         "--n-procs",
         type=int,
@@ -147,7 +166,7 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help=f"Concurrent workload processes (default: {n_procs})",
     )
-    duration = 10.0
+    duration = 30.0
     parser.add_argument(
         "--duration",
         type=float,
@@ -158,10 +177,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
-
-    workload_flags = ["--duration", str(args.duration)]
 
     print(sysinfo.report())
     print(f"\nn_procs={args.n_procs}  duration={args.duration}s")
@@ -169,27 +186,55 @@ def main() -> None:
 
     mps = CudaMpsDaemon()
     mps.stop()
+
     workload_dir = Path(__file__).parent / "workloads"
+    bmm_dim = 256
+    bmm_batch = 8
     workloads = [
-        workload_dir / "bmm.py",
-        workload_dir / "ppo_atari.py",
+        Workload(
+            description=f"Batch matmul [{bmm_batch}x{bmm_dim}x{bmm_dim}]@[{bmm_batch}x{bmm_dim}x{bmm_dim}]",
+            path=workload_dir / "bmm.py",
+            args=[
+                "--duration",
+                str(args.duration),
+                "--matrix-size",
+                str(bmm_dim),
+                "--batch-size",
+                str(bmm_batch),
+            ],
+        ),
+        Workload(
+            description="PPO Atari",
+            path=workload_dir / "ppo_atari.py",
+            args=["--duration", str(args.duration)],
+        ),
+        Workload(
+            description="PPO Atari (Compiled)",
+            path=workload_dir / "ppo_atari.py",
+            args=[
+                "--duration",
+                str(args.duration),
+                "--compile",
+            ],
+        ),
     ]
-    results_dir = Path(__file__).parent / "results" / str(int(time.time()))
+
+    results_dir = Path(__file__).parent / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
     for workload in workloads:
-        rpt.section(workload.name)
+        rpt.section(workload.description)
 
         # ======= 1 process, baseline =======
         baseline = print_metrics(
             "1 Process - Baseline",
-            run_concurrent(workload, workload_flags, 1, results_dir / 'baseline'),
+            run_concurrent(workload, 1, results_dir),
         )
 
         # ======= N process, default =======
         print_metrics(
             f"{args.n_procs} Processes - MPS Disabled",
-            run_concurrent(workload, workload_flags, args.n_procs, results_dir / 'disabled'),
+            run_concurrent(workload, args.n_procs, results_dir),
             baseline=baseline,
         )
 
@@ -197,7 +242,7 @@ def main() -> None:
         with mps:
             print_metrics(
                 f"{args.n_procs} Processes - MPS Enabled",
-                run_concurrent(workload, workload_flags, args.n_procs, results_dir / 'enabled'),
+                run_concurrent(workload, args.n_procs, results_dir),
                 baseline=baseline,
             )
         print()
