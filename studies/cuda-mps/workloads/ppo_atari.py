@@ -1,12 +1,16 @@
 # Source: https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo_atari.py
 # Extracted: Agent architecture + PPO update kernel, driven with synthetic observations.
 # Gymnasium, tyro, tensorboard, and cleanrl_utils are not needed for this benchmark.
+import argparse
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from mlps_shared import affinity
+from result import WorkloadResult
 from torch.distributions.categorical import Categorical
 
 
@@ -41,7 +45,7 @@ class Agent(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
 
-@torch.compile
+# @torch.compile
 def ppo_update(
     agent: Agent,
     optimizer: optim.Optimizer,
@@ -82,8 +86,16 @@ def ppo_update(
     optimizer.step()
 
 
-def main() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--duration", type=float, default=10.0)
+    parser.add_argument("--warmup", type=int, default=100)
+    parser.add_argument("--result-file", type=str, default=None)
+    return parser.parse_args()
+
+
+def main(args: argparse.Namespace) -> None:
+    device = torch.device("cuda")
     torch.manual_seed(42)
 
     n_actions = 18  # Breakout action space
@@ -113,19 +125,7 @@ def main() -> None:
     b_returns = torch.randn(batch_size, generator=rng, device=device)
     b_values = torch.randn(batch_size, generator=rng, device=device)
 
-    ppo_update(
-        agent,
-        optimizer,
-        b_obs,
-        b_actions,
-        b_logprobs,
-        b_advantages,
-        b_returns,
-        b_values,
-    )  # warmup
-
-    start = time.perf_counter()
-    for _ in range(10):
+    for _ in range(args.warmup):
         ppo_update(
             agent,
             optimizer,
@@ -136,8 +136,46 @@ def main() -> None:
             b_returns,
             b_values,
         )
-    print(f"{time.perf_counter() - start:.6f}")
+
+    start = time.perf_counter()
+    deadline = start + args.duration
+    steps = 0
+    while time.perf_counter() < deadline:
+        ppo_update(
+            agent,
+            optimizer,
+            b_obs,
+            b_actions,
+            b_logprobs,
+            b_advantages,
+            b_returns,
+            b_values,
+        )
+        steps += 1
+
+    elapsed = time.perf_counter() - start
+    sps = steps / elapsed if elapsed > 0 else 0.0
+    print(f"Average steps per second: {sps:.4f}", flush=True)
+
+    if args.result_file:
+        result_path = Path(args.result_file)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        res = WorkloadResult(
+            workload=Path(__file__).stem,
+            duration=args.duration,
+            metrics=[
+                {
+                    "name": "Steps per second",
+                    "value": sps,
+                    "unit": "steps/s",
+                }
+            ],
+        )
+        result_path.write_text(res.model_dump_json())
 
 
 if __name__ == "__main__":
-    main()
+    affinity.pin_to_allocated_cpus()
+    affinity.set_localalloc()
+    torch.backends.cudnn.benchmark = True
+    main(parse_args())

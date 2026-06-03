@@ -6,8 +6,9 @@ authors = [{ name = "Steven Rygaard", email = "steven.rygaard@mila.quebec" }]
 requires-python = ">=3.14"
 dependencies = [
     "mlps-shared",
+    "numpy>=2.4.6",
+    "pydantic>=2.13.4",
     "torch",
-    "tyro",
 ]
 
 [tool.uv.sources]

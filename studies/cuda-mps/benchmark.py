@@ -9,87 +9,64 @@ from pathlib import Path
 
 from mlps_shared import results as rpt
 from mlps_shared import sysinfo
+from workloads.result import WorkloadResult
 
 
 class CudaMpsDaemon:
     _instance: "CudaMpsDaemon | None" = None
 
-    def __new__(
-        cls,
-        thread_pct: int = 100,
-        start_timeout: float = 10.0,
-        stop_timeout: float = 10.0,
-        pipe_dir: Path | None = None,
-    ) -> "CudaMpsDaemon":
+    def __new__(cls, *args, **kwargs) -> "CudaMpsDaemon":
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            cls._instance = super().__new__(cls, *args, **kwargs)
             cls._instance._initialized = False
         return cls._instance
 
     def __init__(
         self,
-        thread_pct: int = 100,
-        start_timeout: float = 10.0,
-        stop_timeout: float = 10.0,
+        start_timeout: float = 5.0,
+        stop_timeout: float = 5.0,
         pipe_dir: Path | None = None,
     ) -> None:
         if self._initialized:
             return
-        if not 1 <= thread_pct <= 100:
-            raise ValueError(f"thread_pct must be 1–100, got {thread_pct}")
-        self.thread_pct = thread_pct
         self.start_timeout = start_timeout
         self.stop_timeout = stop_timeout
         self.pipe_dir = pipe_dir or Path(
             os.environ.get("CUDA_MPS_PIPE_DIRECTORY", "/tmp/nvidia-mps")
         )
         self._initialized = True
-
-    @property
-    def env(self) -> dict[str, str]:
-        if self.thread_pct == 100:
-            return {}
-        return {"CUDA_MPS_ACTIVE_THREAD_PERCENTAGE": str(self.thread_pct)}
+        self._process_name = "nvidia-cuda-mps-control"
 
     def start(self) -> None:
         try:
             subprocess.run(
-                ["nvidia-cuda-mps-control", "-d"],
+                [self._process_name, "-d"],
                 check=True,
                 capture_output=True,
             )
         except FileNotFoundError as e:
-            raise RuntimeError(
-                "nvidia-cuda-mps-control not found — CUDA drivers required"
-            ) from e
+            raise RuntimeError(f"{self._process_name} not found") from e
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Failed to start MPS daemon: {e.stderr.decode().strip()}"
-            ) from e
+            raise RuntimeError(f"Failed to start MPS daemon: {e.stderr}") from e
+
         deadline = time.monotonic() + self.start_timeout
         while time.monotonic() < deadline:
             if (self.pipe_dir / "control").exists():
                 return
             time.sleep(0.5)
-        raise RuntimeError(
-            f"MPS daemon did not become ready within {self.start_timeout}s"
-        )
+        raise RuntimeError(f"MPS daemon did not become ready within {self.start_timeout}s")
 
     def stop(self) -> None:
         subprocess.run(
-            ["nvidia-cuda-mps-control"],
+            [self._process_name],
             input="quit\n",
             text=True,
             capture_output=True,
         )
         deadline = time.monotonic() + self.stop_timeout
         while time.monotonic() < deadline:
-            if (
-                subprocess.run(
-                    ["pgrep", "-x", "nvidia-cuda-mps-server"], capture_output=True
-                ).returncode
-                != 0
-            ):
+            pgrep = subprocess.run(["pgrep", "-x", "nvidia-cuda-mps-server"])
+            if (pgrep.returncode != 0):
                 return
             time.sleep(0.5)
         raise RuntimeError(f"MPS daemon did not stop within {self.stop_timeout}s")
@@ -102,48 +79,62 @@ class CudaMpsDaemon:
         self.stop()
 
 
-def parse_tflops(stdout: str) -> float | None:
-    for line in stdout.splitlines():
-        if line.startswith("SUMMARY"):
-            for part in line.split():
-                if part.startswith("mean_tflops="):
-                    return float(part.split("=")[1])
-    return None
+def print_metrics(label: str, results: list[WorkloadResult], baseline: float | None = None) -> float:
+    values = [res.metrics[0].value for res in results]
+    units = [res.metrics[0].unit for res in results]
+    unit = units[0] if units else "units"
+    if not values:
+        raise RuntimeError("No valid metrics found")
+    print()
+    agg = sum(values)
+    rpt.section(label)
+    rows = [
+        (f"per-process ({unit})", "  ".join(f"{t:.3f}" for t in values)),
+        (f"aggregate   ({unit})", f"{agg:.3f}"),
+    ]
+    if baseline and baseline > 0:
+        rows.append(("scaling vs baseline", f"{agg / baseline:.3f}x"))
+    rpt.kvrows(rows)
+    return agg
 
 
 def run_concurrent(
-    n_procs: int,
+    workload: Path,
     workload_flags: list[str],
-    extra_env: dict[str, str] | None = None,
-    workload: Path = Path(__file__).parent / "workload.py",
-) -> list[float | None]:
-    """Launch n_procs concurrent workload processes; return per-process mean TFLOPS."""
-    env = {**os.environ, **(extra_env or {})}
+    n_procs: int,
+    results_dir: Path,
+) -> list[WorkloadResult]:
+    """Launch n_procs concurrent workload processes and read JSON result files."""
+    results = [
+        results_dir / f"{workload.stem}_{i}.json"
+        for i in range(1, n_procs + 1)
+    ]
+
     procs = [
         subprocess.Popen(
-            [sys.executable, str(workload), "--seed", str(i), *workload_flags],
+            [
+                sys.executable,
+                str(workload.resolve()),
+                *workload_flags,
+                "--result-file",
+                str(result),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=env,
         )
-        for i in range(1, n_procs + 1)
+        for result in results
     ]
-    return [parse_tflops(p.communicate()[0]) for p in procs]
 
+    for p in procs:
+        stdout, stderr = p.communicate()
+        if p.returncode != 0:
+            raise RuntimeError(f"Workload {workload.name} failed with exit code {p.returncode}: {stderr.strip()}")
 
-def report_condition(label: str, timings: list[float | None]) -> float:
-    valid = [t for t in timings if t is not None]
-    total = sum(valid)
-    rpt.section(label)
-    rpt.kvrows(
-        [
-            ("per-process (TFLOPS)", "  ".join(f"{t:.3f}" for t in valid)),
-            ("aggregate   (TFLOPS)", f"{total:.3f}"),
-        ]
-    )
-    print()
-    return total
+    return [
+        WorkloadResult.model_validate_json(f.read_text())
+        for f in results
+    ]
 
 
 def parse_args() -> argparse.Namespace:
@@ -156,22 +147,7 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help=f"Concurrent workload processes (default: {n_procs})",
     )
-    matrix_size = 256
-    parser.add_argument(
-        "--matrix-size",
-        type=int,
-        default=matrix_size,
-        metavar="N",
-        help=f"Square matrix side length passed to workload (default: {matrix_size})",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=8,
-        metavar="N",
-        help="bmm batch size passed to workload (default: 8)",
-    )
-    duration = 30.0
+    duration = 10.0
     parser.add_argument(
         "--duration",
         type=float,
@@ -179,78 +155,54 @@ def parse_args() -> argparse.Namespace:
         metavar="S",
         help=f"Run duration per process in seconds (default: {duration})",
     )
-    parser.add_argument(
-        "--dtype", default="float16", choices=["float16", "bfloat16", "float32"]
-    )
-    parser.add_argument(
-        "--mps-thread-pct",
-        type=int,
-        default=100,
-        metavar="PCT",
-        help="GPU SM percentage per MPS client, 1–100 (default: 100)",
-    )
-    parser.add_argument(
-        "--skip-baseline", action="store_true", help="Skip the without-MPS condition"
-    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    workload_flags = [
-        "--matrix-size",
-        str(args.matrix_size),
-        "--batch-size",
-        str(args.batch_size),
-        "--duration",
-        str(args.duration),
-        "--dtype",
-        args.dtype,
-    ]
-    mps = CudaMpsDaemon(thread_pct=args.mps_thread_pct)
+    workload_flags = ["--duration", str(args.duration)]
 
     print(sysinfo.report())
-    print(
-        f"\nn_procs={args.n_procs}  matrix={args.matrix_size}×{args.matrix_size}"
-        f"  batch={args.batch_size}  dtype={args.dtype}  duration={args.duration}s"
-    )
-    if args.mps_thread_pct != 100:
-        print(
-            f"CUDA_MPS_ACTIVE_THREAD_PERCENTAGE={args.mps_thread_pct} (per MPS client)"
-        )
+    print(f"\nn_procs={args.n_procs}  duration={args.duration}s")
     print()
 
-    single_proc_tflops = run_concurrent(1, workload_flags)[0]
-    rpt.section("Single process (uncontended)")
-    rpt.kvrows(
-        [
-            (
-                "TFLOPS",
-                f"{single_proc_tflops:.3f}"
-                if single_proc_tflops is not None
-                else "N/A",
+    mps = CudaMpsDaemon()
+    mps.stop()
+    workload_dir = Path(__file__).parent / "workloads"
+    workloads = [
+        workload_dir / "bmm.py",
+        workload_dir / "ppo_atari.py",
+    ]
+    results_dir = Path(__file__).parent / "results" / str(int(time.time()))
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    for workload in workloads:
+        rpt.section(workload.name)
+
+        # ======= 1 process, baseline =======
+        baseline = print_metrics(
+            "1 Process - Baseline",
+            run_concurrent(workload, workload_flags, 1, results_dir / 'baseline'),
+        )
+
+        # ======= N process, default =======
+        print_metrics(
+            f"{args.n_procs} Processes - MPS Disabled",
+            run_concurrent(workload, workload_flags, args.n_procs, results_dir / 'disabled'),
+            baseline=baseline,
+        )
+
+        # ======= N process, w/ MPS =======
+        with mps:
+            print_metrics(
+                f"{args.n_procs} Processes - MPS Enabled",
+                run_concurrent(workload, workload_flags, args.n_procs, results_dir / 'enabled'),
+                baseline=baseline,
             )
-        ]
-    )
-    print()
-
-    baseline_total = None
-    if not args.skip_baseline:
-        baseline_total = report_condition(
-            "Without MPS (baseline)",
-            run_concurrent(args.n_procs, workload_flags),
-        )
-
-    with mps:
-        mps_total = report_condition(
-            "With MPS",
-            run_concurrent(args.n_procs, workload_flags, extra_env=mps.env),
-        )
-
-    if baseline_total is not None and baseline_total > 0:
-        print(f"MPS aggregate speedup: {mps_total / baseline_total:.3f}x")
+        print()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
