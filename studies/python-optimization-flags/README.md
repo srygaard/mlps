@@ -27,8 +27,8 @@ For ML-style workloads:
 ## Running
 
 ```bash
-uv sync
-uv run python benchmark.py
+uv sync --extra python-optimization-flags
+uv run benchmark.py
 ```
 
 ## Results

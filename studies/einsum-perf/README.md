@@ -8,8 +8,8 @@ be interpreted relative to that floor.
 ## Running
 
 ```bash
-uv sync
-uv run python benchmark.py
+uv sync --extra einsum-perf
+uv run benchmark.py
 ```
 
 ### Options

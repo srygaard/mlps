@@ -23,10 +23,8 @@ Each workload writes a JSON result file consumed by the benchmark wrapper.
 
 ## Running
 
-From `studies/cuda-mps/`:
-
 ```bash
-uv sync
+uv sync --extra cuda-mps
 uv run benchmark.py
 ```
 
