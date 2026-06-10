@@ -52,14 +52,15 @@ System
   python     : 3.14.3
   platform   : Linux-5.15.0-173-generic-x86_64-with-glibc2.35
   cpu        : Intel(R) Xeon(R) Gold 5418Y
-  cpu_cores  : 8 (of 48)
-  ram_gb     : 6 (of 1007.4)
+  cpu_cores  : 10 (of 48)
+  ram_gb     : 12 (of 1002.2)
   numpy      : 2.4.6
   torch      : 2.12.0
+  jax        : 0.10.1
   gpu        : NVIDIA L40S
   gpu_mem_gb : 45.0
-  gpu_driver : 580.95.05
-  git        : 803d04b
+  gpu_driver : 580.159.03
+  git        : cee8ec7
 ```
 
 ### Workload: `workloads/bmm.py --matrix-size 256 --batch-size 8`
@@ -68,18 +69,21 @@ Performs a batched matrix multiply of [8x256x256] @ [8x256x256].
 
 ```text
 === 1 Process - Baseline ===
-  per-process (TFLOPS) : 17.445
-  aggregate   (TFLOPS) : 17.445
+  per-process (TFLOPS) : 17.466
+  aggregate   (TFLOPS) : 17.466
+  GPU SM util (avg %)  : 31.3
 
 === 2 Processes - MPS Disabled ===
-  per-process (TFLOPS) : 1.844  1.953
-  aggregate   (TFLOPS) : 3.798
-  scaling vs baseline  : 0.218x
+  per-process (TFLOPS) : 1.872  1.871
+  aggregate   (TFLOPS) : 3.744
+  scaling vs baseline  : 0.214x
+  GPU SM util (avg %)  : 89.9
 
 === 2 Processes - MPS Enabled ===
-  per-process (TFLOPS) : 17.084  17.075
-  aggregate   (TFLOPS) : 34.159
+  per-process (TFLOPS) : 17.103  17.097
+  aggregate   (TFLOPS) : 34.200
   scaling vs baseline  : 1.958x
+  GPU SM util (avg %)  : 44.8
 ```
 
 ### Workload: `workloads/ppo_atari.py`
@@ -87,19 +91,22 @@ Performs a batched matrix multiply of [8x256x256] @ [8x256x256].
 PPO-Atari training (based on cleanrl).
 
 ```text
-=== 1 Process - Baseline ===
-  per-process (steps/s) : 366.980
-  aggregate   (steps/s) : 366.980
+== 1 Process - Baseline ===
+  per-process (steps/s) : 357.192
+  aggregate   (steps/s) : 357.192
+  GPU SM util (avg %)   : 33.0
 
 === 2 Processes - MPS Disabled ===
-  per-process (steps/s) : 283.029  283.026
-  aggregate   (steps/s) : 566.055
-  scaling vs baseline   : 1.542x
+  per-process (steps/s) : 282.978  283.030
+  aggregate   (steps/s) : 566.008
+  scaling vs baseline   : 1.585x
+  GPU SM util (avg %)   : 84.2
 
 === 2 Processes - MPS Enabled ===
-  per-process (steps/s) : 346.287  346.277
-  aggregate   (steps/s) : 692.564
-  scaling vs baseline   : 1.887x
+  per-process (steps/s) : 353.028  354.059
+  aggregate   (steps/s) : 707.088
+  scaling vs baseline   : 1.980x
+  GPU SM util (avg %)   : 60.8
 ```
 
 ### Workload: `workloads/ppo_atari.py --compile`
@@ -108,16 +115,19 @@ Same as above but with `torch.compile`.
 
 ```text
 === 1 Process - Baseline ===
-  per-process (steps/s) : 584.800
-  aggregate   (steps/s) : 584.800
+  per-process (steps/s) : 567.526
+  aggregate   (steps/s) : 567.526
+  GPU SM util (avg %)   : 29.7
 
 === 2 Processes - MPS Disabled ===
-  per-process (steps/s) : 538.796  540.683
-  aggregate   (steps/s) : 1079.479
-  scaling vs baseline   : 1.846x
+  per-process (steps/s) : 534.881  534.833
+  aggregate   (steps/s) : 1069.714
+  scaling vs baseline   : 1.885x
+  GPU SM util (avg %)   : 71.4
 
 === 2 Processes - MPS Enabled ===
-  per-process (steps/s) : 580.219  569.701
-  aggregate   (steps/s) : 1149.920
-  scaling vs baseline   : 1.966x
+  per-process (steps/s) : 598.119  577.801
+  aggregate   (steps/s) : 1175.920
+  scaling vs baseline   : 2.072x
+  GPU SM util (avg %)   : 71.4
 ```

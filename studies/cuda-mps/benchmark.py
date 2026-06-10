@@ -11,7 +11,8 @@ from pathlib import Path
 
 from mlps_shared import results as rpt
 from mlps_shared import sysinfo
-from workloads.result import WorkloadResult
+from mlps_shared.monitors import SmMonitor
+from workloads.result import Metric, WorkloadResult
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,9 @@ class CudaMpsDaemon:
 
 
 def print_metrics(
-    label: str, results: list[WorkloadResult], baseline: float | None = None
+    label: str,
+    results: list[WorkloadResult],
+    baseline: float | None = None,
 ) -> float:
     values = [res.metrics[0].value for res in results]
     units = [res.metrics[0].unit for res in results]
@@ -114,6 +117,14 @@ def print_metrics(
     ]
     if baseline and baseline > 0:
         rows.append(("scaling vs baseline", f"{agg / baseline:.3f}x"))
+    sm_avg = None
+    for metric in results[0].metrics if results else []:
+        if metric.name == "sm_avg":
+            sm_avg = metric.value
+            # The SM utilization is a global metric - all processes report the same.
+            break
+    if sm_avg is not None:
+        rows.append(("GPU SM util (avg %)", f"{sm_avg:.1f}"))
     rpt.kvrows(rows)
     return agg
 
@@ -124,7 +135,7 @@ def run_concurrent(
     results_dir: Path,
 ) -> list[WorkloadResult]:
     """Launch n_procs concurrent workload processes and read JSON result files."""
-    results = [
+    result_files = [
         # Since the workload may be the same file with different args, use unique paths
         results_dir / f"{workload.path.stem}_{uuid.uuid4()}.json"
         for _ in range(n_procs)
@@ -143,22 +154,27 @@ def run_concurrent(
             stderr=subprocess.PIPE,
             text=True,
         )
-        for result in results
+        for result in result_files
     ]
 
-    for p in procs:
-        _, stderr = p.communicate()
-        if p.returncode != 0:
-            raise RuntimeError(
-                f"Workload {workload.path.name} failed with exit code {p.returncode}: {stderr.strip()}"
-            )
+    with SmMonitor() as sm_util:
+        for p in procs:
+            stdout, stderr = p.communicate()
+            if p.returncode != 0:
+                raise RuntimeError(
+                    f"Workload {workload.path.name} failed with exit code {p.returncode}: {stderr.strip()} {stdout.strip()}"
+                )
 
-    return [WorkloadResult.model_validate_json(f.read_text()) for f in results]
+    results = [WorkloadResult.model_validate_json(f.read_text()) for f in result_files]
+    # The average includes the warmup which may not be entirely accurate.
+    for r in results:
+        r.metrics.append(Metric(name="sm_avg", value=sm_util.average or -0.0, unit="%"))
+    return results
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CUDA MPS multi-process GPU benchmark")
-    n_procs = 3
+    n_procs = 2
     parser.add_argument(
         "--n-procs",
         type=int,
@@ -240,11 +256,12 @@ def main() -> int:
 
         # ======= N process, w/ MPS =======
         with mps:
-            print_metrics(
-                f"{args.n_procs} Processes - MPS Enabled",
-                run_concurrent(workload, args.n_procs, results_dir),
-                baseline=baseline,
-            )
+            results = run_concurrent(workload, args.n_procs, results_dir)
+        print_metrics(
+            f"{args.n_procs} Processes - MPS Enabled",
+            results,
+            baseline=baseline,
+        )
         print()
     return 0
 
