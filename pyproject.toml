@@ -39,5 +39,10 @@ mlps-shared = { path = "shared", editable = true }
 requires = ["setuptools>=67.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = [
+    "ruff>=0.17.1",
+]
+
 [tool.setuptools]
 packages = []

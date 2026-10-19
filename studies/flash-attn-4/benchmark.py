@@ -1,6 +1,7 @@
 import argparse
 import itertools
 import statistics
+import time
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import NamedTuple
 import matplotlib.pyplot as plt
 import torch
 import triton
+from mlps_shared import sysinfo
 
 from examples import (
     attn,
@@ -127,14 +129,20 @@ def bench_op(
         # autograd.grad rather than .backward(): no accumulation into qkv.grad.
         return torch.autograd.grad(out, qkv, dout, retain_graph=True)
 
-    # warmup for compilation, JIT and triton autotuning
-    forward()
-    backward()
     # do_bench flushes the L2 cache between calls
     # https://triton-lang.org/main/python-api/generated/triton.testing.do_bench.html
-    fwd_ms = triton.testing.do_bench(forward, return_mode="all")
-    bwd_ms = triton.testing.do_bench(backward, return_mode="all")
+    fwd_ms = triton.testing.do_bench(forward, warmup=1000, rep=5000, return_mode="all")
+    time.sleep(0.5)  # cooldown
+    bwd_ms = triton.testing.do_bench(backward, warmup=1000, rep=5000, return_mode="all")
     return fwd_ms, bwd_ms
+
+
+class Size(NamedTuple):
+    """An input size: the fixed shape is (batch, seqlen); varlen has as many tokens."""
+
+    name: str
+    batch: int
+    seqlen: int
 
 
 class Stats(NamedTuple):
@@ -178,24 +186,28 @@ def torch_rope_varlen_attn(
 def make_results(
     results: Mapping[str, tuple[list[float], list[float]]],
     *,
-    batch: int,
-    seqlen: int,
+    size: Size,
     lens: Sequence[int],
     output: Path,
 ) -> None:
-    """Prints the results table and saves the plot to ``output``.
+    """Prints the results table for ``size`` and saves the plot to ``output``.
 
     ``results`` maps each op to its (forward, backward) run times in ms.
     """
-    table = {name: (stats(fwd), stats(bwd)) for name, (fwd, bwd) in results.items()}
+    table = {op: (stats(fwd), stats(bwd)) for op, (fwd, bwd) in results.items()}
 
+    mean_len, std_len = statistics.mean(lens), statistics.stdev(lens)
+    print(
+        f"\n{size.name}: fixed {size.batch} sequences, length {size.seqlen}; "
+        f"varlen {len(lens)} sequences, mean length {mean_len:.0f} ± {std_len:.0f}"
+    )
     print("| Op | Fwd mean ± std (µs) | Fwd IQR | Bwd mean ± std (µs) | Bwd IQR |")
     print("| --- | --- | --- | --- | --- |")
-    for name, op_stats in table.items():
+    for op, op_stats in table.items():
         cells = []
         for s in op_stats:
             cells += [f"{s.mean:.1f} ± {s.std:.1f}", f"{s.iqr:.1f}"]
-        print(f"| `{name}` | " + " | ".join(cells) + " |")
+        print(f"| `{op}` | " + " | ".join(cells) + " |")
 
     fixed_ops = ("fa4_attn", "fa4_torch_rope_attn", "fa4_triton_rope_attn")
     varlen_ops = (
@@ -206,41 +218,53 @@ def make_results(
     plot(
         [
             (
-                f"Fixed shape: B={batch}, S={seqlen} ({batch * seqlen} tokens)",
-                {name: table[name] for name in fixed_ops},
+                (
+                    f"Fixed shape: {size.batch} sequences, length {size.seqlen} "
+                    f"({size.batch * size.seqlen} tokens)"
+                ),
+                {op: table[op] for op in fixed_ops},
             ),
             (
-                f"Varlen: {len(lens)} sequences ({sum(lens)} tokens)",
-                {name: table[name] for name in varlen_ops},
+                (
+                    f"Varlen: {len(lens)} sequences, mean length "
+                    f"{mean_len:.0f} ± {std_len:.0f} ({sum(lens)} tokens)"
+                ),
+                {op: table[op] for op in varlen_ops},
             ),
         ],
         output,
     )
-    print(f"\nSaved {output}.")
+    print(f"Saved {output}.")
 
 
-def main() -> int:
-    """Prints a table of forward and backward µs for each op, and plots it."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output", type=Path, help="Where to save the plot (PNG).")
-    args = parser.parse_args()
+def bench_size(
+    size: Size,
+) -> tuple[dict[str, tuple[list[float], list[float]]], list[int]]:
+    """Returns each op's (forward, backward) run times for ``size``.
 
-    if not attn.hardware_supports_fa4():
-        print("FA4 requires a Hopper (sm90) GPU, or newer.")
-        return 1
-    torch.manual_seed(0)
-
-    batch, seqlen, heads, head_dim = 8, 1024, 16, 64
+    Also returns the varlen sequence lengths.
+    """
+    heads, head_dim = 16, 64
     dtype = torch.bfloat16
+    # Don't let a previous size's graphs turn this one's shapes dynamic.
+    torch._dynamo.reset()  # noqa: SLF001
 
     # Fixed shape: one (S, D/2) table shared by every sequence in the batch.
     cos, sin = attn_triton_rope.rope_tables(
-        torch.arange(seqlen, device="cuda"), head_dim
+        torch.arange(size.seqlen, device="cuda"), head_dim
     )
-    qkv = torch.randn(batch, seqlen, 3, heads, head_dim, device="cuda", dtype=dtype)
+    qkv = torch.randn(
+        size.batch, size.seqlen, 3, heads, head_dim, device="cuda", dtype=dtype
+    )
 
-    # Varlen: positions restart at 0 for each packed sequence.
-    lens = torch.randint(64, 1024, (8,), generator=torch.Generator().manual_seed(0))
+    # Varlen: positions restart at 0 for each packed sequence. Lengths are evenly
+    # spaced from S/16 to S, then shuffled, so every size has the same padding share
+    # (about 47%). There are enough sequences for the same token count as the fixed
+    # shape.
+    shortest = size.seqlen // 16
+    n_seqs = round(size.batch * size.seqlen / ((shortest + size.seqlen) / 2))
+    lens = torch.linspace(shortest, size.seqlen, n_seqs).long()
+    lens = lens[torch.randperm(n_seqs, generator=torch.Generator().manual_seed(0))]
     lens = lens.tolist()
     cu_seqlens = torch.tensor(
         [0, *itertools.accumulate(lens)], dtype=torch.int32, device="cuda"
@@ -267,8 +291,41 @@ def main() -> int:
             varlen,
         ),
     }
+    return results, lens
 
-    make_results(results, batch=batch, seqlen=seqlen, lens=lens, output=args.output)
+
+def parse_args() -> argparse.Namespace:
+    """Returns the parsed command-line arguments."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "output",
+        type=Path,
+        help="Where to save the plots (PNG); each size's name is added to the stem.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    """Prints forward and backward µs for each op at each size, and plots them."""
+    args = parse_args()
+
+    sys_info = sysinfo.collect()
+    print(f"{sysinfo.report(sys_info)}")
+
+    if not attn.hardware_supports_fa4():
+        print("FA4 requires a Hopper (sm90) GPU, or newer.")
+        return 1
+    torch.manual_seed(0)
+
+    runs = [Size("small", 8, 512), Size("medium", 32, 1024), Size("large", 64, 4096)]
+    for run in runs:
+        results, lens = bench_size(run)
+        make_results(
+            results,
+            size=run,
+            lens=lens,
+            output=args.output.with_stem(f"{args.output.stem}-{run.name}"),
+        )
     return 0
 
 
