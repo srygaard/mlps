@@ -8,6 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+.ruff_cache
 
 # Projects
 studies/cuda-mps/results
+studies/flash-attn-4/slurm/runs/
