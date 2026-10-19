@@ -1,0 +1,45 @@
+line-length = 88
+target-version = "py314"
+
+[format]
+docstring-code-format = true
+
+[lint]
+select = ["ALL"]
+ignore = [
+    # Conflict with `ruff format`.
+    "COM812",
+    "ISC001",
+    # Copyright lives in the root LICENSE, not per-file headers.
+    "CPY",
+    # Module and package docstrings are optional.
+    "D100",
+    "D104",
+    # Plain imports, not `if TYPE_CHECKING:` blocks.
+    "TC",
+    # Error messages go inline in the raise, not in a separate variable.
+    "EM",
+    "TRY003",
+]
+
+[lint.per-file-ignores]
+"benchmark.py" = ["T201"] # prints its table
+"examples/*.py" = [
+    "INP001",  # standalone scripts, not a package
+    "T201",    # prints its progress
+]
+"tests/*" = [
+    "INP001",  # a plain directory, not a package
+    "S101",    # pytest asserts
+    "D",       # test names say what they check
+    "PLR2004", # literal shapes in assertions
+    "SLF001",  # tests exercise the private ops and kernel directly
+]
+"examples/*triton*.py" = [
+    "N803",    # triton constexpr args are UPPER_CASE by convention
+    "PLR0913", # a kernel takes every pointer, stride and constexpr it needs
+    "PLR0917",
+]
+
+[lint.pydocstyle]
+convention = "google"

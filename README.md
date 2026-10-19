@@ -7,6 +7,7 @@ A collection of performance studies for Python ML workloads, techniques, and too
 - [python-optimization-flags](studies/python-optimization-flags/) — Impact of `python -O` / `-OO` on ML-style code
 - [einsum-perf](studies/einsum-perf/) — `einsum` vs native vs `opt_einsum` across JAX and PyTorch, CPU and GPU
 - [cuda-mps](studies/cuda-mps/) — aggregate GPU throughput with and without CUDA MPS for N concurrent processes
+- [flash-attn-4](studies/flash-attn-4/) — FlashAttention 4 (CuTeDSL) examples with no RoPE, plain-torch RoPE and fused triton RoPE, plus per-op kernel benchmarks (Linux, Hopper or newer GPU)
 
 ## Install study dependencies
 
@@ -14,6 +15,7 @@ Install only one study's dependencies from the root project with bracket extras:
 
 - `uv pip install -e .[cuda-mps]`
 - `uv pip install -e .[einsum-perf]`
+- `uv pip install -e .[flash-attn-4]`
 - `uv pip install -e .[python-optimization-flags]`
 
 To install all optional study dependencies at once:
